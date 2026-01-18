@@ -1,0 +1,109 @@
+@rendermode InteractiveServer
+@implements IDisposable
+
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+@using Lab5_Identity.Services
+
+@inject ApplicationDbContext DbContext
+@inject CitySelectionService CitySelectionService
+
+<label class="mb-0 small">Город:</label>
+<select class="form-select form-select-sm" style="width: auto; max-width: 200px;" 
+        value="@selectedCity" 
+        @onchange="@OnCityChanged"
+        disabled="@isLoadingCities">
+    @if (isLoadingCities)
+    {
+        <option>Загрузка...</option>
+    }
+    else if (availableCities.Count == 0)
+    {
+        <option>Нет городов</option>
+    }
+    else
+    {
+        @if (string.IsNullOrEmpty(selectedCity))
+        {
+            <option value="">Выберите город</option>
+        }
+        @foreach (var city in availableCities)
+        {
+            <option value="@city">@city</option>
+        }
+    }
+</select>
+
+@code {
+    private List<string> availableCities = [];
+    private bool isLoadingCities = true;
+    private string? selectedCity;
+
+    protected override async Task OnInitializedAsync()
+    {
+        CitySelectionService.OnCityChanged += OnCitySelectionChanged;
+        await LoadCities();
+        await LoadSelectedCity();
+    }
+
+    private async Task LoadCities()
+    {
+        isLoadingCities = true;
+        try
+        {
+            availableCities = await DbContext.Cinemas
+                .Where(c => c.IsActive)
+                .Select(c => c.City)
+                .Distinct()
+                .OrderBy(c => c)
+                .ToListAsync();
+            
+            // Если город еще не выбран, выберем первый доступный
+            if (string.IsNullOrEmpty(selectedCity) && availableCities.Count > 0)
+            {
+                await CitySelectionService.SetSelectedCityAsync(availableCities[0]);
+                selectedCity = availableCities[0];
+            }
+        }
+        catch
+        {
+            availableCities = [];
+        }
+        finally
+        {
+            isLoadingCities = false;
+        }
+    }
+
+    private async Task LoadSelectedCity()
+    {
+        selectedCity = await CitySelectionService.GetSelectedCityAsync();
+        if (string.IsNullOrEmpty(selectedCity) && availableCities.Count > 0)
+        {
+            selectedCity = availableCities[0];
+            await CitySelectionService.SetSelectedCityAsync(selectedCity);
+        }
+    }
+
+    private async Task OnCityChanged(ChangeEventArgs e)
+    {
+        var newCity = e.Value?.ToString();
+        await CitySelectionService.SetSelectedCityAsync(newCity);
+        selectedCity = newCity;
+        StateHasChanged();
+    }
+
+    private void OnCitySelectionChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            selectedCity = await CitySelectionService.GetSelectedCityAsync();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        CitySelectionService.OnCityChanged -= OnCitySelectionChanged;
+    }
+}

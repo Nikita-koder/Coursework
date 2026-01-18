@@ -1,0 +1,180 @@
+@page "/my-tickets"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+
+@inject ApplicationDbContext DbContext
+@inject UserManager<ApplicationUser> UserManager
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Мои билеты</PageTitle>
+
+<h1>Мои билеты</h1>
+<p class="text-muted">Список ваших бронирований и оплаченных билетов.</p>
+
+@if (isLoading)
+{
+    <div class="text-center">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+    </div>
+}
+else if (tickets.Count == 0)
+{
+    <div class="alert alert-info">
+        Пока нет активных заказов.
+    </div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-striped align-middle">
+            <thead>
+                <tr>
+                    <th>Фильм</th>
+                    <th>Сеанс</th>
+                    <th>Зал</th>
+                    <th>Места</th>
+                    <th>Статус заказа</th>
+                    <th>Сумма</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var orderGroup in tickets)
+                {
+                    <tr>
+                        <td>
+                            <a href="@($"movie/{orderGroup.MovieId}")" class="text-decoration-none">
+                                @orderGroup.MovieTitle
+                            </a>
+                        </td>
+                        <td>@orderGroup.StartAt.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td>@orderGroup.HallName</td>
+                        <td>@orderGroup.Seats</td>
+                        <td>
+                            @switch (orderGroup.Status)
+                            {
+                                case OrderStatus.Reserved:
+                                    <span class="badge bg-warning">Забронирован</span>
+                                    break;
+                                case OrderStatus.Paid:
+                                    <span class="badge bg-success">Оплачен</span>
+                                    break;
+                                case OrderStatus.Cancelled:
+                                    <span class="badge bg-secondary">Отменён</span>
+                                    break;
+                                case OrderStatus.Expired:
+                                    <span class="badge bg-danger">Истёк</span>
+                                    break;
+                                default:
+                                    <span class="badge bg-secondary">@orderGroup.Status</span>
+                                    break;
+                            }
+                        </td>
+                        <td>@orderGroup.TotalAmount.ToString("0.00") ₽</td>
+                        <td class="text-end">
+                            <a href="@($"movie/{orderGroup.MovieId}")" class="btn btn-sm btn-outline-primary">
+                                О фильме
+                            </a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<TicketRow> tickets = [];
+    private bool isLoading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTickets();
+    }
+
+    private async Task LoadTickets()
+    {
+        isLoading = true;
+        try
+        {
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var user = await UserManager.GetUserAsync(authState.User);
+            if (user == null) return;
+
+            // Загружаем заказы текущего пользователя с билетами
+            var orders = await DbContext.Orders
+                .Include(o => o.Tickets)
+                    .ThenInclude(t => t.Showtime)
+                        .ThenInclude(s => s!.Movie)
+                .Include(o => o.Tickets)
+                    .ThenInclude(t => t.Showtime)
+                        .ThenInclude(s => s!.Hall)
+                .Include(o => o.Tickets)
+                    .ThenInclude(t => t.Seat)
+                .Where(o => o.UserId == user.Id)
+                .OrderByDescending(o => o.ReservedAt)
+                .ToListAsync();
+
+            var ticketRows = new List<TicketRow>();
+
+            foreach (var order in orders)
+            {
+                // Группируем билеты по сеансам
+                var ticketsByShowtime = order.Tickets
+                    .GroupBy(t => t.ShowtimeId);
+
+                foreach (var showtimeGroup in ticketsByShowtime)
+                {
+                    var firstTicket = showtimeGroup.First();
+                    var showtime = firstTicket.Showtime;
+                    var movie = showtime?.Movie;
+                    var hall = showtime?.Hall;
+
+                    if (showtime == null || movie == null || hall == null) continue;
+
+                    // Собираем места
+                    var seats = string.Join(", ", showtimeGroup
+                        .Select(t => $"{t.Seat?.RowNumber}-{t.Seat?.SeatNumber}")
+                        .Where(s => !string.IsNullOrEmpty(s))
+                        .OrderBy(s => s));
+
+                    ticketRows.Add(new TicketRow(
+                        order.OrderId,
+                        movie.MovieId,
+                        movie.Title,
+                        showtime.StartAt,
+                        hall.Name,
+                        seats,
+                        order.Status,
+                        order.TotalAmount
+                    ));
+                }
+            }
+
+            tickets = ticketRows;
+        }
+        catch
+        {
+            tickets = [];
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private sealed record TicketRow(
+        Guid OrderId,
+        int MovieId,
+        string MovieTitle,
+        DateTime StartAt,
+        string HallName,
+        string Seats,
+        OrderStatus Status,
+        decimal TotalAmount);
+}

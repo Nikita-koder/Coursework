@@ -1,0 +1,305 @@
+@page "/showtimes"
+@attribute [AllowAnonymous]
+@rendermode InteractiveServer
+@implements IDisposable
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+@using Lab5_Identity.Services
+
+@inject ApplicationDbContext DbContext
+@inject CitySelectionService CitySelectionService
+
+<PageTitle>Расписание</PageTitle>
+
+<h1>Расписание сеансов</h1>
+@if (movieFilter != null)
+{
+    <p class="text-muted">Сеансы фильма: <strong>@movieFilter.Title</strong></p>
+}
+else
+{
+    <p class="text-muted">Выберите сеанс и перейдите к выбору мест.</p>
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title mb-3">Фильтры</h5>
+        <div class="row g-3">
+            <div class="col-md-3">
+                <label for="dateFilter" class="form-label">Дата</label>
+                <select id="dateFilter" class="form-select" @bind="selectedDateFilter" @bind:after="OnFiltersChanged">
+                    <option value="">Все даты</option>
+                    <option value="today">Сегодня</option>
+                    <option value="tomorrow">Завтра</option>
+                    <option value="week">Ближайшая неделя</option>
+                </select>
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Залы</label>
+                <div class="border rounded p-2" style="max-height: 150px; overflow-y: auto;">
+                    @if (isLoadingHalls)
+                    {
+                        <div class="text-muted small">Загрузка залов...</div>
+                    }
+                    else if (availableHalls.Count == 0)
+                    {
+                        <div class="text-muted small">Залы не найдены</div>
+                    }
+                    else
+                    {
+                        @foreach (var hall in availableHalls)
+                        {
+                            var hallId = hall.HallId;
+                            var isChecked = selectedHallIds.Contains(hallId);
+                            <div class="form-check">
+                                <input class="form-check-input" 
+                                       type="checkbox" 
+                                       id="hall_@hallId" 
+                                       checked="@isChecked"
+                                       @onchange="@(() => ToggleHallSync(hallId))" />
+                                <label class="form-check-label" for="hall_@hallId">
+                                    @hall.CinemaName - @hall.HallName
+                                </label>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button class="btn btn-outline-secondary w-100" @onclick="ClearFilters">
+                    Сбросить фильтры
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (showtimes.Count == 0 && !isLoading)
+{
+    <div class="alert alert-info">
+        Сеансы отсутствуют. Попробуйте изменить фильтры.
+    </div>
+}
+else if (isLoading)
+{
+    <div class="text-center">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+    </div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th>Фильм</th>
+                    <th>Дата и время</th>
+                    <th>Зал</th>
+                    <th>Цена от</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var show in showtimes)
+                {
+                    <tr>
+                        <td>
+                            <a href="@($"movie/{show.MovieId}")" class="text-decoration-none">@show.MovieTitle</a>
+                        </td>
+                        <td>@show.StartAt.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td>@show.HallName</td>
+                        <td>@show.BasePrice.ToString("0.00") ₽</td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-primary" href="@($"booking/{show.ShowtimeId}")">Выбрать места</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<p class="text-muted">
+    Для бронирования потребуется вход в систему.
+</p>
+
+@code {
+    private List<ShowtimeRow> showtimes = [];
+    private bool isLoading = true;
+    private bool isLoadingHalls = true;
+    private Movie? movieFilter;
+    private List<HallFilterRow> availableHalls = [];
+    
+    private string selectedDateFilter = "";
+    private HashSet<int> selectedHallIds = [];
+
+    [SupplyParameterFromQuery]
+    private int? MovieId { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        CitySelectionService.OnCityChanged += OnCitySelectionChanged;
+        await LoadHalls();
+        await LoadShowtimes();
+    }
+
+    private async void OnCitySelectionChanged()
+    {
+        await InvokeAsync(async () =>
+        {
+            await LoadHalls();
+            await LoadShowtimes();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        CitySelectionService.OnCityChanged -= OnCitySelectionChanged;
+    }
+
+    private async Task LoadHalls()
+    {
+        isLoadingHalls = true;
+        try
+        {
+            var selectedCity = await CitySelectionService.GetSelectedCityAsync();
+            
+            var query = DbContext.Halls
+                .Include(h => h.Cinema)
+                .Where(h => h.IsActive && h.Cinema != null && h.Cinema.IsActive);
+
+            // Фильтр по городу
+            if (!string.IsNullOrEmpty(selectedCity))
+            {
+                query = query.Where(h => h.Cinema!.City == selectedCity);
+            }
+
+            var hallsData = await query.ToListAsync();
+
+            availableHalls = hallsData
+                .Select(h => new HallFilterRow(
+                    h.HallId,
+                    h.Cinema!.Name,
+                    h.Name
+                ))
+                .OrderBy(h => h.CinemaName)
+                .ThenBy(h => h.HallName)
+                .ToList();
+        }
+        catch
+        {
+            availableHalls = [];
+        }
+        finally
+        {
+            isLoadingHalls = false;
+        }
+    }
+
+    private async Task LoadShowtimes()
+    {
+        isLoading = true;
+        
+        try
+        {
+            var selectedCity = await CitySelectionService.GetSelectedCityAsync();
+            
+            var query = DbContext.Showtimes
+                .Include(s => s.Movie)
+                .Include(s => s.Hall)
+                    .ThenInclude(h => h!.Cinema)
+                .Where(s => s.Status == ShowtimeStatus.Scheduled
+                    && s.StartAt >= DateTime.Now);
+
+            // Фильтр по городу
+            if (!string.IsNullOrEmpty(selectedCity))
+            {
+                query = query.Where(s => s.Hall != null 
+                    && s.Hall.Cinema != null 
+                    && s.Hall.Cinema.City == selectedCity
+                    && s.Hall.Cinema.IsActive
+                    && s.Hall.IsActive);
+            }
+
+            // Фильтр по фильму (из query параметра)
+            if (MovieId.HasValue)
+            {
+                query = query.Where(s => s.MovieId == MovieId.Value);
+                movieFilter = await DbContext.Movies.FirstOrDefaultAsync(m => m.MovieId == MovieId.Value);
+            }
+
+            // Фильтр по залам (мультиселект)
+            if (selectedHallIds.Count > 0)
+            {
+                query = query.Where(s => selectedHallIds.Contains(s.HallId));
+            }
+
+            // Фильтр по дате
+            var now = DateTime.Now;
+            var todayStart = new DateTime(now.Year, now.Month, now.Day);
+            var tomorrowStart = todayStart.AddDays(1);
+            var weekEnd = todayStart.AddDays(7);
+
+            query = selectedDateFilter switch
+            {
+                "today" => query.Where(s => s.StartAt >= todayStart && s.StartAt < tomorrowStart),
+                "tomorrow" => query.Where(s => s.StartAt >= tomorrowStart && s.StartAt < tomorrowStart.AddDays(1)),
+                "week" => query.Where(s => s.StartAt >= todayStart && s.StartAt < weekEnd),
+                _ => query
+            };
+
+            var data = await query
+                .OrderBy(s => s.StartAt)
+                .Select(s => new ShowtimeRow(
+                    s.ShowtimeId,
+                    s.MovieId,
+                    s.Movie != null ? s.Movie.Title : "Неизвестный фильм",
+                    s.StartAt,
+                    s.Hall != null ? s.Hall.Name : "Неизвестный зал",
+                    s.BasePrice
+                ))
+                .ToListAsync();
+
+            showtimes = data;
+        }
+        catch
+        {
+            showtimes = [];
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task ToggleHallSync(int hallId)
+    {
+        if (selectedHallIds.Contains(hallId))
+        {
+            selectedHallIds.Remove(hallId);
+        }
+        else
+        {
+            selectedHallIds.Add(hallId);
+        }
+        await OnFiltersChanged();
+    }
+
+    private async Task OnFiltersChanged()
+    {
+        await LoadShowtimes();
+    }
+
+    private async Task ClearFilters()
+    {
+        selectedDateFilter = "";
+        selectedHallIds.Clear();
+        await LoadShowtimes();
+    }
+
+    private sealed record ShowtimeRow(int ShowtimeId, int MovieId, string MovieTitle, DateTime StartAt, string HallName, decimal BasePrice);
+    private sealed record HallFilterRow(int HallId, string CinemaName, string HallName);
+}

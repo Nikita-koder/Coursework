@@ -1,0 +1,38 @@
+﻿@page "/"
+@attribute [AllowAnonymous]
+
+<PageTitle>Главная</PageTitle>
+
+<div class="p-4 bg-light rounded-3">
+    <h1 class="display-6">Кинотеатр: покупка и бронирование билетов</h1>
+    <p class="lead">
+        Выбирайте фильмы, смотрите расписание и бронируйте места онлайн.
+    </p>
+    <div class="d-flex gap-2 flex-wrap">
+        <a class="btn btn-primary" href="movies">Смотреть афишу</a>
+        <a class="btn btn-outline-primary" href="showtimes">Расписание сеансов</a>
+        <AuthorizeView>
+            <Authorized>
+                <a class="btn btn-success" href="my-tickets">Мои билеты</a>
+            </Authorized>
+            <NotAuthorized>
+                <a class="btn btn-success" href="Account/Login">Войти и забронировать</a>
+            </NotAuthorized>
+        </AuthorizeView>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-4">
+        <h3>1. Выберите фильм</h3>
+        <p>Афиша с карточками фильмов, описанием и возрастным рейтингом.</p>
+    </div>
+    <div class="col-md-4">
+        <h3>2. Выберите сеанс</h3>
+        <p>Расписание по датам и залам, актуальные цены и формат.</p>
+    </div>
+    <div class="col-md-4">
+        <h3>3. Забронируйте места</h3>
+        <p>Выбор мест на схеме зала и оформление брони или покупки.</p>
+    </div>
+</div>

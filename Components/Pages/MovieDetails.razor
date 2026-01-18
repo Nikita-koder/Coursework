@@ -1,0 +1,196 @@
+@page "/movie/{MovieId:int}"
+@attribute [AllowAnonymous]
+@rendermode InteractiveServer
+@implements IDisposable
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+@using Lab5_Identity.Services
+
+@inject ApplicationDbContext DbContext
+@inject NavigationManager NavigationManager
+@inject CitySelectionService CitySelectionService
+
+<PageTitle>@(movie?.Title ?? "Фильм")</PageTitle>
+
+@if (isLoading)
+{
+    <div class="text-center">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+    </div>
+}
+else if (movie == null)
+{
+    <div class="alert alert-warning">
+        Фильм не найден.
+    </div>
+}
+else
+{
+    <div class="row">
+        <div class="col-md-4">
+            @if (!string.IsNullOrEmpty(movie.PosterUrl))
+            {
+                <img src="@movie.PosterUrl" alt="@movie.Title" class="img-fluid rounded" />
+            }
+            else
+            {
+                <div class="bg-secondary text-white d-flex align-items-center justify-content-center rounded" style="height: 400px;">
+                    <span>Нет постера</span>
+                </div>
+            }
+        </div>
+        <div class="col-md-8">
+            <h1>@movie.Title</h1>
+            
+            <div class="mb-3">
+                @if (!string.IsNullOrEmpty(movie.AgeRating))
+                {
+                    <span class="badge bg-info me-2">@movie.AgeRating</span>
+                }
+                <span class="text-muted">@movie.DurationMinutes мин</span>
+                @if (movie.ReleaseDate.HasValue)
+                {
+                    <span class="text-muted ms-2">Год: @movie.ReleaseDate.Value.Year</span>
+                }
+            </div>
+
+            @if (!string.IsNullOrEmpty(movie.Description))
+            {
+                <div class="mb-4">
+                    <h4>Описание</h4>
+                    <p class="lead">@movie.Description</p>
+                </div>
+            }
+
+            <div class="d-flex gap-2 mb-4">
+                <a href="@($"showtimes?movieId={movie.MovieId}")" class="btn btn-primary">
+                    Посмотреть сеансы
+                </a>
+                <button class="btn btn-outline-secondary" onclick="history.back()">
+                    Назад
+                </button>
+            </div>
+        </div>
+    </div>
+
+    @if (showtimes.Count > 0)
+    {
+        <hr class="my-4" />
+        <h3>Ближайшие сеансы</h3>
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Дата и время</th>
+                        <th>Зал</th>
+                        <th>Цена от</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var show in showtimes)
+                    {
+                        <tr>
+                            <td>@show.StartAt.ToString("dd.MM.yyyy HH:mm")</td>
+                            <td>@show.HallName</td>
+                            <td>@show.BasePrice.ToString("0.00") ₽</td>
+                            <td class="text-end">
+                                <a class="btn btn-sm btn-primary" href="@($"booking/{show.ShowtimeId}")">
+                                    Выбрать места
+                                </a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int MovieId { get; set; }
+
+    private Movie? movie;
+    private List<ShowtimeRow> showtimes = [];
+    private bool isLoading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        CitySelectionService.OnCityChanged += OnCitySelectionChanged;
+        await LoadMovieData();
+    }
+
+    private async void OnCitySelectionChanged()
+    {
+        await InvokeAsync(async () =>
+        {
+            await LoadMovieData();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        CitySelectionService.OnCityChanged -= OnCitySelectionChanged;
+    }
+
+    private async Task LoadMovieData()
+    {
+        isLoading = true;
+        try
+        {
+            movie = await DbContext.Movies
+                .FirstOrDefaultAsync(m => m.MovieId == MovieId && m.IsActive);
+
+            if (movie != null)
+            {
+                var selectedCity = await CitySelectionService.GetSelectedCityAsync();
+                
+                // Загружаем ближайшие сеансы для этого фильма
+                var query = DbContext.Showtimes
+                    .Include(s => s.Hall)
+                        .ThenInclude(h => h!.Cinema)
+                    .Where(s => s.MovieId == MovieId
+                        && s.Status == ShowtimeStatus.Scheduled
+                        && s.StartAt >= DateTime.Now);
+
+                // Фильтр по городу
+                if (!string.IsNullOrEmpty(selectedCity))
+                {
+                    query = query.Where(s => s.Hall != null 
+                        && s.Hall.Cinema != null 
+                        && s.Hall.Cinema.City == selectedCity
+                        && s.Hall.Cinema.IsActive
+                        && s.Hall.IsActive);
+                }
+
+                var data = await query
+                    .OrderBy(s => s.StartAt)
+                    .Take(10) // Показываем только ближайшие 10 сеансов
+                    .Select(s => new ShowtimeRow(
+                        s.ShowtimeId,
+                        s.StartAt,
+                        s.Hall != null ? s.Hall.Name : "Неизвестный зал",
+                        s.BasePrice
+                    ))
+                    .ToListAsync();
+
+                showtimes = data;
+            }
+        }
+        catch
+        {
+            movie = null;
+            showtimes = [];
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private sealed record ShowtimeRow(int ShowtimeId, DateTime StartAt, string HallName, decimal BasePrice);
+}

@@ -1,0 +1,313 @@
+@page "/booking/{ShowtimeId:int}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+
+@inject ApplicationDbContext DbContext
+@inject UserManager<ApplicationUser> UserManager
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager NavigationManager
+
+<PageTitle>Бронирование</PageTitle>
+
+@if (showtime == null)
+{
+    <div class="alert alert-warning">Сеанс не найден</div>
+}
+else if (showtime.Hall == null)
+{
+    <div class="alert alert-warning">Данные зала не загружены</div>
+}
+else
+{
+    <h1>Выбор мест</h1>
+    <p class="text-muted">
+        Фильм: <strong>@showtime.Movie?.Title</strong><br />
+        Зал: <strong>@showtime.Hall.Name</strong><br />
+        Начало: <strong>@showtime.StartAt.ToString("dd.MM.yyyy HH:mm")</strong>
+    </p>
+
+    <div class="mb-3">
+        <span class="badge bg-secondary me-2">Свободно</span>
+        <span class="badge bg-success me-2">Выбрано</span>
+        <span class="badge bg-danger">Занято</span>
+    </div>
+
+    <div class="d-flex flex-column gap-2">
+        @foreach (var row in rows)
+        {
+            <div class="d-flex align-items-center gap-2">
+                <div class="text-muted" style="width: 3rem;">Ряд @row.Key</div>
+                <div class="d-flex flex-wrap gap-1">
+                    @foreach (var seat in row.Value)
+                    {
+                        var isSelected = IsSelected(seat);
+                        var isBlocked = seat.State != SeatState.Free;
+                        var buttonClass = isBlocked
+                            ? "btn btn-sm btn-danger"
+                            : isSelected
+                                ? "btn btn-sm btn-success"
+                                : "btn btn-sm btn-outline-secondary";
+
+                        <button class="@buttonClass"
+                                disabled="@(isBlocked || isProcessing)"
+                                @onclick="() => ToggleSeat(seat)">
+                            @seat.Number
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <hr />
+
+    <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2">
+        <div>
+            <strong>Выбранные места:</strong>
+            <span>@SelectedSeatList</span>
+        </div>
+        <div>
+            <strong>Итого:</strong>
+            <span>@TotalPrice.ToString("0.00") ₽</span>
+        </div>
+        <button class="btn btn-primary"
+                disabled="@(selectedSeats.Count == 0 || isProcessing)"
+                @onclick="ReserveSeats">
+            @if (isProcessing)
+            {
+                <span class="spinner-border spinner-border-sm me-1"></span>
+                <text>Обработка...</text>
+            }
+            else
+            {
+                <text>Забронировать</text>
+            }
+        </button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(statusMessage))
+    {
+        var alertClass = statusMessage.Contains("ошибк", StringComparison.OrdinalIgnoreCase) 
+            ? "alert-danger" 
+            : "alert-info";
+        <div class="alert @alertClass mt-3" role="alert">
+            @statusMessage
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int ShowtimeId { get; set; }
+
+    private Showtime? showtime;
+    private Tariff? defaultTariff;
+    private readonly Dictionary<int, List<SeatView>> rows = new();
+    private readonly HashSet<(int Row, int Number)> selectedSeats = [];
+    private string? statusMessage;
+    private bool isProcessing;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadShowtimeData();
+    }
+
+    private async Task LoadShowtimeData()
+    {
+        showtime = await DbContext.Showtimes
+            .Include(s => s.Movie)
+            .Include(s => s.Hall)
+                .ThenInclude(h => h!.Seats)
+            .Include(s => s.Tickets)
+            .FirstOrDefaultAsync(s => s.ShowtimeId == ShowtimeId);
+
+        if (showtime?.Hall == null) return;
+
+        // Получаем тариф по умолчанию
+        defaultTariff = await DbContext.Tariffs
+            .Where(t => t.IsActive)
+            .OrderBy(t => t.TariffId)
+            .FirstOrDefaultAsync();
+
+        // Получаем занятые места для этого сеанса
+        var takenSeatIds = showtime.Tickets
+            .Where(t => t.Status == TicketStatus.Reserved || t.Status == TicketStatus.Paid)
+            .Select(t => t.SeatId)
+            .ToHashSet();
+
+        // Группируем места по рядам
+        var seatsByRow = showtime.Hall.Seats
+            .Where(s => s.IsActive)
+            .GroupBy(s => s.RowNumber)
+            .OrderBy(g => g.Key);
+
+        rows.Clear();
+        foreach (var rowGroup in seatsByRow)
+        {
+            var seatViews = rowGroup
+                .OrderBy(s => s.SeatNumber)
+                .Select(s => new SeatView(
+                    s.SeatId,
+                    s.RowNumber,
+                    s.SeatNumber,
+                    takenSeatIds.Contains(s.SeatId) ? SeatState.Taken : SeatState.Free
+                ))
+                .ToList();
+            rows[rowGroup.Key] = seatViews;
+        }
+    }
+
+    private void ToggleSeat(SeatView seat)
+    {
+        if (isProcessing) return;
+        
+        statusMessage = null;
+        var key = (seat.Row, seat.Number);
+        if (!selectedSeats.Add(key))
+        {
+            selectedSeats.Remove(key);
+        }
+        StateHasChanged();
+    }
+
+    private bool IsSelected(SeatView seat) => selectedSeats.Contains((seat.Row, seat.Number));
+
+    private string SelectedSeatList =>
+        selectedSeats.Count == 0
+            ? "не выбрано"
+            : string.Join(", ", selectedSeats
+                .OrderBy(s => s.Row)
+                .ThenBy(s => s.Number)
+                .Select(s => $"{s.Row}-{s.Number}"));
+
+    private decimal TotalPrice
+    {
+        get
+        {
+            if (showtime == null || defaultTariff == null) return 0;
+            return selectedSeats.Count * (showtime.BasePrice + defaultTariff.PriceModifier);
+        }
+    }
+
+    private async Task ReserveSeats()
+    {
+        if (selectedSeats.Count == 0)
+        {
+            statusMessage = "Выберите места для бронирования.";
+            return;
+        }
+
+        if (showtime == null || defaultTariff == null)
+        {
+            statusMessage = "Ошибка: данные сеанса не загружены.";
+            return;
+        }
+
+        isProcessing = true;
+        statusMessage = null;
+
+        try
+        {
+            // Получаем текущего пользователя
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var user = await UserManager.GetUserAsync(authState.User);
+            if (user == null)
+            {
+                statusMessage = "Ошибка: пользователь не найден. Пожалуйста, войдите заново.";
+                isProcessing = false;
+                return;
+            }
+
+            // Находим SeatId для выбранных мест
+            var selectedSeatIds = new List<int>();
+            foreach (var (row, number) in selectedSeats)
+            {
+                var seat = rows[row]
+                    .FirstOrDefault(s => s.Row == row && s.Number == number);
+                if (seat != null)
+                {
+                    selectedSeatIds.Add(seat.SeatId);
+                }
+            }
+
+            if (selectedSeatIds.Count != selectedSeats.Count)
+            {
+                statusMessage = "Ошибка: не все выбранные места найдены.";
+                isProcessing = false;
+                return;
+            }
+
+            // Проверяем, что места все еще свободны
+            var alreadyTaken = await DbContext.Tickets
+                .Where(t => t.ShowtimeId == ShowtimeId
+                    && selectedSeatIds.Contains(t.SeatId)
+                    && (t.Status == TicketStatus.Reserved || t.Status == TicketStatus.Paid))
+                .AnyAsync();
+
+            if (alreadyTaken)
+            {
+                statusMessage = "Ошибка: одно или несколько мест уже забронированы. Пожалуйста, обновите страницу и выберите другие места.";
+                await LoadShowtimeData();
+                isProcessing = false;
+                return;
+            }
+
+            // Создаем заказ
+            var order = new Order
+            {
+                OrderId = Guid.NewGuid(),
+                UserId = user.Id,
+                Status = OrderStatus.Reserved,
+                TotalAmount = TotalPrice,
+                ReservedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(15) // 15 минут на оплату
+            };
+
+            DbContext.Orders.Add(order);
+
+            // Создаем билеты
+            var ticketPrice = showtime.BasePrice + defaultTariff.PriceModifier;
+            foreach (var seatId in selectedSeatIds)
+            {
+                var ticket = new Ticket
+                {
+                    TicketId = Guid.NewGuid(),
+                    OrderId = order.OrderId,
+                    ShowtimeId = ShowtimeId,
+                    SeatId = seatId,
+                    TariffId = defaultTariff.TariffId,
+                    Price = ticketPrice,
+                    Status = TicketStatus.Reserved
+                };
+                DbContext.Tickets.Add(ticket);
+            }
+
+            await DbContext.SaveChangesAsync();
+
+            statusMessage = $"Бронирование успешно создано! Заказ №{order.OrderId}. Выбранные места: {SelectedSeatList}. Сумма: {TotalPrice:0.00} ₽.";
+            selectedSeats.Clear();
+
+            // Перезагружаем данные для отображения занятых мест
+            await LoadShowtimeData();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Ошибка при создании бронирования: {ex.Message}";
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    private sealed record SeatView(int SeatId, int Row, int Number, SeatState State);
+
+    private enum SeatState
+    {
+        Free,
+        Taken
+    }
+}

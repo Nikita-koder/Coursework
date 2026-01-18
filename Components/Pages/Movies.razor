@@ -1,0 +1,100 @@
+@page "/movies"
+@attribute [AllowAnonymous]
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using Lab5_Identity.Data
+@using Lab5_Identity.Services
+
+@inject ApplicationDbContext DbContext
+@inject CitySelectionService CitySelectionService
+
+<PageTitle>Афиша</PageTitle>
+
+<h1>Афиша</h1>
+<p class="text-muted">Подборка фильмов на ближайшие сеансы.</p>
+
+@if (movies.Count == 0 && !isLoading)
+{
+    <div class="alert alert-info">
+        Фильмы отсутствуют. Обратитесь к администратору.
+    </div>
+}
+else if (isLoading)
+{
+    <div class="text-center">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+    </div>
+}
+else
+{
+    <div class="row g-3">
+        @foreach (var movie in movies)
+        {
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-body d-flex flex-column">
+                        <h5 class="card-title">
+                            <a href="@($"movie/{movie.MovieId}")" class="text-decoration-none">@movie.Title</a>
+                        </h5>
+                        <h6 class="card-subtitle mb-2 text-muted">@movie.DurationMinutes мин • @movie.AgeRating</h6>
+                        <p class="card-text">@movie.Description</p>
+                        <div class="mt-auto">
+                            <a class="btn btn-sm btn-outline-primary" href="@($"showtimes?movieId={movie.MovieId}")">Посмотреть сеансы</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<Movie> movies = [];
+    private bool isLoading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMovies();
+    }
+
+    private async Task LoadMovies()
+    {
+        isLoading = true;
+        try
+        {
+            var selectedCity = await CitySelectionService.GetSelectedCityAsync();
+            
+            var query = DbContext.Movies
+                .Where(m => m.IsActive);
+
+            // Фильтрация по городу: показываем только фильмы, которые идут в кинотеатрах выбранного города
+            if (!string.IsNullOrEmpty(selectedCity))
+            {
+                query = query.Where(m => m.Showtimes
+                    .Any(s => s.Status == ShowtimeStatus.Scheduled 
+                        && s.StartAt >= DateTime.Now
+                        && s.Hall != null 
+                        && s.Hall.Cinema != null 
+                        && s.Hall.Cinema.City == selectedCity
+                        && s.Hall.Cinema.IsActive
+                        && s.Hall.IsActive));
+            }
+
+            var data = await query
+                .OrderBy(m => m.Title)
+                .ToListAsync();
+
+            movies = data;
+        }
+        catch
+        {
+            movies = [];
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}
