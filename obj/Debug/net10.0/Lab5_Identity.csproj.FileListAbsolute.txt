@@ -222,3 +222,4 @@ D:\Programming\ЗКТ-45-21\ПиПВБ\КР\obj\Debug\net10.0\refint\Lab5_Identi
 D:\Programming\ЗКТ-45-21\ПиПВБ\КР\obj\Debug\net10.0\Lab5_Identity.pdb
 D:\Programming\ЗКТ-45-21\ПиПВБ\КР\obj\Debug\net10.0\Lab5_Identity.genruntimeconfig.cache
 D:\Programming\ЗКТ-45-21\ПиПВБ\КР\obj\Debug\net10.0\ref\Lab5_Identity.dll
+D:\Programming\ЗКТ-45-21\ПиПВБ\КР\obj\Debug\net10.0\Lab5_Identity.sourcelink.json

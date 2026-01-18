@@ -42,12 +42,18 @@
     protected override async Task OnInitializedAsync()
     {
         CitySelectionService.OnCityChanged += OnCitySelectionChanged;
-        await LoadCities();
+        
+        // Загружаем выбранный город первым (не использует DbContext)
         await LoadSelectedCity();
+        
+        // Затем загружаем города из БД
+        await LoadCities();
     }
 
     private async Task LoadCities()
     {
+        if (availableCities.Count > 0) return; // Предотвращаем повторный вызов, если уже загружено
+        
         isLoadingCities = true;
         try
         {
